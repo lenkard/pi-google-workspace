@@ -152,6 +152,10 @@ If `refresh_token` is missing (or scopes changed), run `/gws-setup` again and re
 
 The package gallery reads npm packages that include the `pi-package` keyword.
 
+## Version notes
+
+See [`CHANGELOG.md`](CHANGELOG.md) for release notes. Version `1.2.0` uses the recommended Google OAuth Desktop app loopback flow with an automatically generated local redirect URI.
+
 ## Development
 
 - Main extension file: `index.ts`

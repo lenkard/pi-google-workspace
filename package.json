@@ -27,6 +27,7 @@
     "index.ts",
     "README.md",
     "google-workspace.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "peerDependencies": {
