@@ -5,11 +5,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Geun-Oh/pi-google-workspace.git"
+    "url": "git+https://github.com/lenkard/pi-google-workspace.git"
   },
-  "homepage": "https://github.com/Geun-Oh/pi-google-workspace#readme",
+  "homepage": "https://github.com/lenkard/pi-google-workspace#readme",
   "bugs": {
-    "url": "https://github.com/Geun-Oh/pi-google-workspace/issues"
+    "url": "https://github.com/lenkard/pi-google-workspace/issues"
   },
   "keywords": [
     "pi-package",

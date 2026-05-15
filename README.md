@@ -15,13 +15,16 @@ Features:
 
 ## Install
 
-### npm
+Install directly from this GitHub repository with pi:
+
 ```bash
-pi install npm:pi-google-workspace
+pi install git:github.com/lenkard/pi-google-workspace
 ```
 
-Then run:
+Then restart/reload pi and run:
+
 ```bash
+/reload
 /gws-setup
 ```
 
@@ -150,7 +153,7 @@ If `refresh_token` is missing (or scopes changed), run `/gws-setup` again and re
 ### Status
 - `google_workspace_status`
 
-The package gallery reads npm packages that include the `pi-package` keyword.
+This fork is intended to be installed directly from GitHub via `pi install git:github.com/lenkard/pi-google-workspace`.
 
 ## Version notes
 
