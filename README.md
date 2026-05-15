@@ -70,20 +70,21 @@ Go to **APIs & Services → OAuth consent screen**:
 
 Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
 
-Recommended option:
+Use this application type:
 
 - **Application type:** Desktop app
-- Desktop clients work well with loopback redirect URIs such as `http://127.0.0.1:53682/oauth2callback`.
-
-Alternative option:
-
-- **Application type:** Web application
-- Add this authorized redirect URI exactly:
-  - `http://127.0.0.1:53682/oauth2callback`
 
 Then copy:
 - **Client ID**
 - **Client Secret**
+
+You do **not** manually configure an authorized redirect URI for the Desktop app client. During `/gws-setup`, the extension starts a temporary local loopback server and automatically creates a redirect URI like:
+
+```text
+http://127.0.0.1:<random-free-port>/oauth2callback
+```
+
+This follows Google's installed-app loopback OAuth pattern and avoids fixed-port conflicts.
 
 ### 5) Connect in pi
 
@@ -97,31 +98,30 @@ Run inside pi:
 Then:
 1. Paste Client ID
 2. Paste Client Secret
-3. Confirm Redirect URI (default is recommended)
-4. Complete Google sign-in + consent in browser
+3. Complete Google sign-in + consent in browser
 
-The extension uses a local HTTP loopback callback. The redirect URI must use `http://` and a loopback host such as `127.0.0.1` or `localhost`.
+The extension automatically picks a free local port and sends Google a redirect URI such as `http://127.0.0.1:43127/oauth2callback`. You do not need to type or register this URI for a Desktop app OAuth client.
 
 ### 6) Token storage and refresh behavior
 
 Credentials are stored locally at:
 - `~/.pi/agent/google-workspace/oauth.json`
 
-The extension stores `access_token` and `refresh_token` for automatic refresh. OAuth uses PKCE and validates the callback `state` value.
+The extension stores `access_token` and `refresh_token` for automatic refresh. OAuth uses PKCE, a random loopback callback port, and validates the callback `state` value.
 If `refresh_token` is missing (or scopes changed), run `/gws-setup` again and re-consent.
 
 ### 7) Common setup issues
 
 - **"redirect_uri_mismatch"**
-  - For Web application clients, the redirect URI in Google Cloud must exactly match the one used in `/gws-setup`.
-  - Use the default `http://127.0.0.1:53682/oauth2callback` unless you have a reason to change it.
+  - Make sure your OAuth client type is **Desktop app**, not **Web application**.
+  - Do not manually enter a redirect URI in `/gws-setup`; it is generated automatically.
 - **"access_denied" or app not available**
   - Your account is not added as a test user (when app is in Testing).
 - **API not enabled / 403 errors**
   - One or more required APIs were not enabled in the selected project.
 - **No refresh token returned**
   - Re-run `/gws-setup` and grant consent again.
-  - If you changed OAuth client ID, secret, redirect URI, or scopes, old refresh tokens are not reused.
+  - If you changed OAuth client ID, secret, or scopes, old refresh tokens are not reused.
 
 ## Available Tools
 

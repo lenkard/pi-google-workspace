@@ -21,19 +21,17 @@ Local OAuth credential storage:
 3. Configure the OAuth consent screen.
    - Add your account as a test user if your app is in testing mode.
 4. Create an OAuth client.
-   - Recommended: **Desktop app**
-   - If you use **Web application**, add this authorized redirect URI exactly:
-     - `http://127.0.0.1:53682/oauth2callback`
-   - The extension callback is local HTTP only. Use `http://` with a loopback host such as `127.0.0.1` or `localhost`.
+   - Application type: **Desktop app**
+   - Copy the Client ID and Client Secret.
+   - Do not configure or type a redirect URI. The extension automatically creates a temporary loopback redirect such as `http://127.0.0.1:<random-free-port>/oauth2callback` during `/gws-setup`.
 
 ## 2) Initial Authentication in pi
 
 1. Run `/reload` in pi.
 2. Run `/gws-setup`.
 3. Enter your Client ID and Client Secret.
-4. Enter Redirect URI (default is recommended).
-5. Sign in with Google and approve permissions.
-6. On success, `oauth.json` is saved.
+4. Sign in with Google and approve permissions.
+5. On success, `oauth.json` is saved.
 
 ## 3) Available Tools
 
@@ -77,8 +75,8 @@ Local OAuth credential storage:
 
 ## Notes
 
-- OAuth uses PKCE and validates the callback `state` value.
+- OAuth uses PKCE, a random local loopback callback port, and validates the callback `state` value.
 - A `refresh_token` must be issued on first consent for automatic token refresh.
 - If no `refresh_token` exists, run `/gws-setup` again.
-- Old refresh tokens are reused only when the OAuth client ID, client secret, and redirect URI are unchanged.
+- Old refresh tokens are reused only when the OAuth client ID and client secret are unchanged.
 - This version includes Drive, Docs, Slides, and Sheets scopes. If you have an older token, re-run `/gws-setup` and re-consent.

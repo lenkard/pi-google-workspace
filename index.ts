@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -9,8 +10,8 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 const EXTENSION_NAME = "google-workspace";
 const CONFIG_DIR = join(homedir(), ".pi", "agent", "google-workspace");
 const CONFIG_PATH = join(CONFIG_DIR, "oauth.json");
-const DEFAULT_REDIRECT_URI = "http://127.0.0.1:53682/oauth2callback";
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const OAUTH_CALLBACK_HOST = "127.0.0.1";
+const OAUTH_CALLBACK_PATH = "/oauth2callback";
 const OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/documents",
@@ -564,23 +565,6 @@ function createPkcePair() {
   return { verifier, challenge };
 }
 
-function validateRedirectUri(redirectUri: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(redirectUri);
-  } catch {
-    return "Redirect URI format is invalid.";
-  }
-
-  if (parsed.protocol !== "http:") return "Redirect URI must use http. Local OAuth callback does not support https.";
-  if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
-    return "Redirect URI must use a loopback host such as 127.0.0.1 or localhost.";
-  }
-  if (!parsed.port) return "Redirect URI must include a port, for example http://127.0.0.1:53682/oauth2callback.";
-  if (!parsed.pathname || parsed.pathname === "/") return "Redirect URI must include a callback path, for example /oauth2callback.";
-  return null;
-}
-
 function extractAuthorizationCode(input: string) {
   const trimmed = input.trim();
   try {
@@ -591,22 +575,29 @@ function extractAuthorizationCode(input: string) {
   }
 }
 
-async function waitForAuthCode(redirectUri: string, expectedState: string, timeoutMs = 180_000): Promise<string> {
-  const callback = new URL(redirectUri);
-  const host = callback.hostname;
-  const port = Number(callback.port || (callback.protocol === "https:" ? 443 : 80));
-  const expectedPath = callback.pathname;
+async function startOAuthCallbackServer(expectedState: string, timeoutMs = 180_000): Promise<{
+  redirectUri: string;
+  code: Promise<string>;
+  close: () => void;
+}> {
+  let server!: Server;
+  let timer: NodeJS.Timeout | undefined;
+  let rejectCode!: (error: Error) => void;
+  let closed = false;
 
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new Error("OAuth authorization timed out."));
-    }, timeoutMs);
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (timer) clearTimeout(timer);
+    server.close(() => undefined);
+  };
 
-    const server = createServer((req, res) => {
+  const code = new Promise<string>((resolve, reject) => {
+    rejectCode = reject;
+    server = createServer((req, res) => {
       try {
-        const reqUrl = new URL(req.url || "/", `${callback.protocol}//${req.headers.host}`);
-        if (reqUrl.pathname !== expectedPath) {
+        const reqUrl = new URL(req.url || "/", `http://${req.headers.host ?? OAUTH_CALLBACK_HOST}`);
+        if (reqUrl.pathname !== OAUTH_CALLBACK_PATH) {
           res.statusCode = 404;
           res.end("Not Found");
           return;
@@ -616,20 +607,18 @@ async function waitForAuthCode(redirectUri: string, expectedState: string, timeo
         if (error) {
           res.statusCode = 400;
           res.end("Authorization failed. You can close this tab.");
-          clearTimeout(timer);
-          server.close();
+          close();
           reject(new Error(`OAuth error: ${error}`));
           return;
         }
 
         const state = reqUrl.searchParams.get("state");
-        const code = reqUrl.searchParams.get("code");
+        const authCode = reqUrl.searchParams.get("code");
 
-        if (state !== expectedState || !code) {
+        if (state !== expectedState || !authCode) {
           res.statusCode = 400;
           res.end("Invalid callback. You can close this tab.");
-          clearTimeout(timer);
-          server.close();
+          close();
           reject(new Error("Failed to validate state or receive authorization code."));
           return;
         }
@@ -638,22 +627,45 @@ async function waitForAuthCode(redirectUri: string, expectedState: string, timeo
         res.setHeader("content-type", "text/html; charset=utf-8");
         res.end("<h2>Google authentication completed.</h2><p>You can close this tab and return to pi.</p>");
 
-        clearTimeout(timer);
-        server.close();
-        resolve(code);
+        close();
+        resolve(authCode);
       } catch (error) {
-        clearTimeout(timer);
-        server.close();
+        close();
         reject(error as Error);
       }
     });
+  });
 
-    server.listen(port, host, () => undefined);
-    server.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
+  await new Promise<void>((resolveListen, rejectListen) => {
+    const onError = (error: Error) => rejectListen(error);
+    server.once("error", onError);
+    server.listen(0, OAUTH_CALLBACK_HOST, () => {
+      server.off("error", onError);
+      resolveListen();
     });
   });
+
+  timer = setTimeout(() => {
+    close();
+    rejectCode(new Error("OAuth authorization timed out."));
+  }, timeoutMs);
+
+  server.on("error", (error) => {
+    close();
+    rejectCode(error);
+  });
+
+  const address = server.address() as AddressInfo | null;
+  if (!address?.port) {
+    close();
+    throw new Error("Failed to allocate local OAuth callback port.");
+  }
+
+  return {
+    redirectUri: `http://${OAUTH_CALLBACK_HOST}:${address.port}${OAUTH_CALLBACK_PATH}`,
+    code,
+    close,
+  };
 }
 
 async function exchangeCodeForToken(params: {
@@ -732,23 +744,23 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
       const clientSecret = await ctx.ui.input("Google OAuth Client Secret", "GOCSPX-...");
       if (!clientSecret) return;
 
-      const redirectUriInput = await ctx.ui.input("Redirect URI", DEFAULT_REDIRECT_URI);
-      const redirectUri = redirectUriInput?.trim() || DEFAULT_REDIRECT_URI;
+      const state = randomBytes(12).toString("hex");
+      const pkce = createPkcePair();
 
-      const redirectError = validateRedirectUri(redirectUri);
-      if (redirectError) {
-        ctx.ui.notify(redirectError, "error");
+      let callback: Awaited<ReturnType<typeof startOAuthCallbackServer>>;
+      try {
+        callback = await startOAuthCallbackServer(state);
+      } catch (error) {
+        ctx.ui.notify(`Failed to start local OAuth callback server: ${(error as Error).message}`, "error");
         return;
       }
 
-      const state = randomBytes(12).toString("hex");
-      const pkce = createPkcePair();
+      const redirectUri = callback.redirectUri;
       const url = authUrl({ clientId: clientId.trim(), redirectUri, state, codeChallenge: pkce.challenge });
 
       let code = "";
-      const codePromise = waitForAuthCode(redirectUri, state);
 
-      ctx.ui.notify("Opening your browser to start Google authentication...", "info");
+      ctx.ui.notify(`Opening your browser to start Google authentication. Local redirect: ${redirectUri}`, "info");
       try {
         await openBrowser(pi, url);
       } catch {
@@ -757,10 +769,11 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
       }
 
       try {
-        code = await codePromise;
+        code = await callback.code;
       } catch (error) {
+        callback.close();
         ctx.ui.notify(`Automatic callback failed: ${(error as Error).message}`, "warning");
-        const manualCode = await ctx.ui.input("Paste the authorization code or full redirected URL", "http://127.0.0.1:53682/oauth2callback?code=...");
+        const manualCode = await ctx.ui.input("Paste the authorization code or full redirected URL", `${redirectUri}?code=...`);
         if (!manualCode) return;
         code = extractAuthorizationCode(manualCode);
       }
@@ -778,8 +791,7 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
 
         const canReuseRefreshToken =
           existing?.clientId === trimmedClientId &&
-          existing?.clientSecret === trimmedClientSecret &&
-          existing?.redirectUri === redirectUri;
+          existing?.clientSecret === trimmedClientSecret;
 
         const config: AuthConfig = {
           clientId: trimmedClientId,
