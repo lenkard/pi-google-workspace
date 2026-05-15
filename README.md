@@ -1,6 +1,12 @@
 # pi Google Workspace Extension
 
-Google Workspace extension for [pi](https://github.com/badlogic/pi-mono):
+Google Workspace extension for [pi](https://github.com/badlogic/pi-mono).
+
+## Credits
+
+Original project created by [Geun-Oh](https://github.com/Geun-Oh). This fork builds on that work and keeps attribution to the original author.
+
+Features:
 - Google Drive (list, upload, download, create folder)
 - Google Docs (read, create, append, replace, export)
 - Google Sheets (create, read, update)
@@ -62,14 +68,18 @@ Go to **APIs & Services → OAuth consent screen**:
 
 ### 4) Create OAuth client credentials
 
-Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
+Go to **APIs & Services → Credentials → Create Credentials → OAuth client ID**.
 
-- Recommended client type: **Desktop app**
-- Also supported: **Web application**
+Recommended option:
 
-If you choose **Web application**, add this redirect URI exactly:
+- **Application type:** Desktop app
+- Desktop clients work well with loopback redirect URIs such as `http://127.0.0.1:53682/oauth2callback`.
 
-- `http://127.0.0.1:53682/oauth2callback`
+Alternative option:
+
+- **Application type:** Web application
+- Add this authorized redirect URI exactly:
+  - `http://127.0.0.1:53682/oauth2callback`
 
 Then copy:
 - **Client ID**
@@ -90,24 +100,28 @@ Then:
 3. Confirm Redirect URI (default is recommended)
 4. Complete Google sign-in + consent in browser
 
+The extension uses a local HTTP loopback callback. The redirect URI must use `http://` and a loopback host such as `127.0.0.1` or `localhost`.
+
 ### 6) Token storage and refresh behavior
 
 Credentials are stored locally at:
 - `~/.pi/agent/google-workspace/oauth.json`
 
-The extension stores `access_token` and `refresh_token` for automatic refresh.
+The extension stores `access_token` and `refresh_token` for automatic refresh. OAuth uses PKCE and validates the callback `state` value.
 If `refresh_token` is missing (or scopes changed), run `/gws-setup` again and re-consent.
 
 ### 7) Common setup issues
 
 - **"redirect_uri_mismatch"**
-  - The redirect URI in Google Cloud does not exactly match the one used in `/gws-setup`.
+  - For Web application clients, the redirect URI in Google Cloud must exactly match the one used in `/gws-setup`.
+  - Use the default `http://127.0.0.1:53682/oauth2callback` unless you have a reason to change it.
 - **"access_denied" or app not available**
   - Your account is not added as a test user (when app is in Testing).
 - **API not enabled / 403 errors**
   - One or more required APIs were not enabled in the selected project.
 - **No refresh token returned**
   - Re-run `/gws-setup` and grant consent again.
+  - If you changed OAuth client ID, secret, redirect URI, or scopes, old refresh tokens are not reused.
 
 ## Available Tools
 
@@ -148,4 +162,5 @@ The package gallery reads npm packages that include the `pi-package` keyword.
 
 - Do not commit OAuth tokens (`oauth.json`).
 - Use least-privilege OAuth scopes when possible.
+- `/gws-logout` attempts to revoke the Google token before deleting local credentials.
 - Revoke credentials from Google account security settings if compromised.

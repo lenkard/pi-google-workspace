@@ -1,7 +1,7 @@
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { Type } from "@sinclair/typebox";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { createServer } from "node:http";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -10,12 +10,14 @@ const EXTENSION_NAME = "google-workspace";
 const CONFIG_DIR = join(homedir(), ".pi", "agent", "google-workspace");
 const CONFIG_PATH = join(CONFIG_DIR, "oauth.json");
 const DEFAULT_REDIRECT_URI = "http://127.0.0.1:53682/oauth2callback";
-const OAUTH_SCOPE = [
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/documents",
   "https://www.googleapis.com/auth/presentations",
   "https://www.googleapis.com/auth/spreadsheets",
-].join(" ");
+];
+const OAUTH_SCOPE = OAUTH_SCOPES.join(" ");
 
 type OAuthTokens = {
   access_token: string;
@@ -542,7 +544,7 @@ function extractSlidesText(presentation: JsonMap) {
   });
 }
 
-function authUrl(config: { clientId: string; redirectUri: string; state: string }) {
+function authUrl(config: { clientId: string; redirectUri: string; state: string; codeChallenge: string }) {
   const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   url.searchParams.set("client_id", config.clientId);
   url.searchParams.set("redirect_uri", config.redirectUri);
@@ -551,7 +553,42 @@ function authUrl(config: { clientId: string; redirectUri: string; state: string 
   url.searchParams.set("access_type", "offline");
   url.searchParams.set("prompt", "consent");
   url.searchParams.set("state", config.state);
+  url.searchParams.set("code_challenge", config.codeChallenge);
+  url.searchParams.set("code_challenge_method", "S256");
   return url.toString();
+}
+
+function createPkcePair() {
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  return { verifier, challenge };
+}
+
+function validateRedirectUri(redirectUri: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    return "Redirect URI format is invalid.";
+  }
+
+  if (parsed.protocol !== "http:") return "Redirect URI must use http. Local OAuth callback does not support https.";
+  if (!LOOPBACK_HOSTS.has(parsed.hostname)) {
+    return "Redirect URI must use a loopback host such as 127.0.0.1 or localhost.";
+  }
+  if (!parsed.port) return "Redirect URI must include a port, for example http://127.0.0.1:53682/oauth2callback.";
+  if (!parsed.pathname || parsed.pathname === "/") return "Redirect URI must include a callback path, for example /oauth2callback.";
+  return null;
+}
+
+function extractAuthorizationCode(input: string) {
+  const trimmed = input.trim();
+  try {
+    const url = new URL(trimmed);
+    return url.searchParams.get("code") ?? trimmed;
+  } catch {
+    return trimmed;
+  }
 }
 
 async function waitForAuthCode(redirectUri: string, expectedState: string, timeoutMs = 180_000): Promise<string> {
@@ -624,11 +661,13 @@ async function exchangeCodeForToken(params: {
   clientSecret: string;
   redirectUri: string;
   code: string;
+  codeVerifier: string;
 }) {
   const body = new URLSearchParams({
     client_id: params.clientId,
     client_secret: params.clientSecret,
     code: params.code,
+    code_verifier: params.codeVerifier,
     grant_type: "authorization_code",
     redirect_uri: params.redirectUri,
   });
@@ -696,21 +735,18 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
       const redirectUriInput = await ctx.ui.input("Redirect URI", DEFAULT_REDIRECT_URI);
       const redirectUri = redirectUriInput?.trim() || DEFAULT_REDIRECT_URI;
 
-      let parsedRedirect: URL;
-      try {
-        parsedRedirect = new URL(redirectUri);
-      } catch {
-        ctx.ui.notify("Redirect URI format is invalid.", "error");
-        return;
-      }
-
-      if (!["http:", "https:"].includes(parsedRedirect.protocol)) {
-        ctx.ui.notify("Redirect URI must use http or https.", "error");
+      const redirectError = validateRedirectUri(redirectUri);
+      if (redirectError) {
+        ctx.ui.notify(redirectError, "error");
         return;
       }
 
       const state = randomBytes(12).toString("hex");
-      const url = authUrl({ clientId: clientId.trim(), redirectUri, state });
+      const pkce = createPkcePair();
+      const url = authUrl({ clientId: clientId.trim(), redirectUri, state, codeChallenge: pkce.challenge });
+
+      let code = "";
+      const codePromise = waitForAuthCode(redirectUri, state);
 
       ctx.ui.notify("Opening your browser to start Google authentication...", "info");
       try {
@@ -720,36 +756,49 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
         ctx.ui.notify(url, "info");
       }
 
-      let code = "";
       try {
-        code = await waitForAuthCode(redirectUri, state);
+        code = await codePromise;
       } catch (error) {
         ctx.ui.notify(`Automatic callback failed: ${(error as Error).message}`, "warning");
-        const manualCode = await ctx.ui.input("Paste the authorization code", "4/0A...");
+        const manualCode = await ctx.ui.input("Paste the authorization code or full redirected URL", "http://127.0.0.1:53682/oauth2callback?code=...");
         if (!manualCode) return;
-        code = manualCode.trim();
+        code = extractAuthorizationCode(manualCode);
       }
 
       try {
+        const trimmedClientId = clientId.trim();
+        const trimmedClientSecret = clientSecret.trim();
         const tokens = await exchangeCodeForToken({
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
+          clientId: trimmedClientId,
+          clientSecret: trimmedClientSecret,
           redirectUri,
           code,
+          codeVerifier: pkce.verifier,
         });
 
+        const canReuseRefreshToken =
+          existing?.clientId === trimmedClientId &&
+          existing?.clientSecret === trimmedClientSecret &&
+          existing?.redirectUri === redirectUri;
+
         const config: AuthConfig = {
-          clientId: clientId.trim(),
-          clientSecret: clientSecret.trim(),
+          clientId: trimmedClientId,
+          clientSecret: trimmedClientSecret,
           redirectUri,
           tokens: {
             ...tokens,
-            refresh_token: tokens.refresh_token ?? existing?.tokens.refresh_token,
+            refresh_token: tokens.refresh_token ?? (canReuseRefreshToken ? existing?.tokens.refresh_token : undefined),
           },
         };
 
         await saveConfig(config);
-        ctx.ui.notify(`Configuration saved: ${CONFIG_PATH}`, "success");
+        ctx.ui.notify(`Configuration saved: ${CONFIG_PATH}`, "info");
+        if (!config.tokens.refresh_token) {
+          ctx.ui.notify(
+            "No refresh_token was returned. Automatic refresh will not work. Re-run /gws-setup and make sure you grant consent.",
+            "warning",
+          );
+        }
       } catch (error) {
         ctx.ui.notify(`Configuration failed: ${(error as Error).message}`, "error");
       }
@@ -757,16 +806,27 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("gws-logout", {
-    description: "Delete local Google Workspace credentials",
+    description: "Revoke and delete local Google Workspace credentials",
     handler: async (_args, ctx) => {
-      const ok = await ctx.ui.confirm("Delete credentials", `Delete this file?\n${CONFIG_PATH}`);
+      const ok = await ctx.ui.confirm("Revoke and delete credentials", `Revoke Google token and delete this file?\n${CONFIG_PATH}`);
       if (!ok) return;
 
       try {
+        const config = await readConfig();
+        const token = config?.tokens.refresh_token ?? config?.tokens.access_token;
+        if (token) {
+          const res = await fetch("https://oauth2.googleapis.com/revoke", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ token }),
+          });
+          if (!res.ok) ctx.ui.notify("Google token revocation failed; deleting local credentials anyway.", "warning");
+        }
+
         await rm(CONFIG_PATH, { force: true });
-        ctx.ui.notify("Credentials deleted.", "success");
+        ctx.ui.notify("Credentials revoked and deleted.", "info");
       } catch (error) {
-        ctx.ui.notify(`Deletion failed: ${(error as Error).message}`, "error");
+        ctx.ui.notify(`Logout failed: ${(error as Error).message}`, "error");
       }
     },
   });
@@ -782,7 +842,7 @@ export default function googleWorkspaceExtension(pi: ExtensionAPI) {
       if (!config) {
         return {
           content: [{ type: "text", text: `Not configured. Run /gws-setup. (${CONFIG_PATH})` }],
-          details: { configured: false, configPath: CONFIG_PATH },
+          details: { configured: false, configPath: CONFIG_PATH, refreshToken: false, expiresAt: null, expired: null },
         };
       }
 

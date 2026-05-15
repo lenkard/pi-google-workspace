@@ -1,5 +1,9 @@
 # Google Workspace Extension (OAuth for Personal Accounts)
 
+## Credits
+
+Original project created by [Geun-Oh](https://github.com/Geun-Oh). This fork builds on that work and keeps attribution to the original author.
+
 Extension file location:
 - `~/.pi/agent/extensions/google-workspace/index.ts`
 
@@ -18,8 +22,9 @@ Local OAuth credential storage:
    - Add your account as a test user if your app is in testing mode.
 4. Create an OAuth client.
    - Recommended: **Desktop app**
-   - If you use **Web application**, add this redirect URI:
+   - If you use **Web application**, add this authorized redirect URI exactly:
      - `http://127.0.0.1:53682/oauth2callback`
+   - The extension callback is local HTTP only. Use `http://` with a loopback host such as `127.0.0.1` or `localhost`.
 
 ## 2) Initial Authentication in pi
 
@@ -68,9 +73,12 @@ Local OAuth credential storage:
 ## 4) Sign Out
 
 - Run `/gws-logout`
+- The command attempts to revoke the Google token before deleting the local credential file.
 
 ## Notes
 
+- OAuth uses PKCE and validates the callback `state` value.
 - A `refresh_token` must be issued on first consent for automatic token refresh.
 - If no `refresh_token` exists, run `/gws-setup` again.
-- This version includes `drive` + `spreadsheets` scopes. If you have an older token, re-run `/gws-setup` and re-consent.
+- Old refresh tokens are reused only when the OAuth client ID, client secret, and redirect URI are unchanged.
+- This version includes Drive, Docs, Slides, and Sheets scopes. If you have an older token, re-run `/gws-setup` and re-consent.
